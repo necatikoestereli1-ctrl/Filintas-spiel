@@ -9,8 +9,9 @@ const keys = {};
 const touch = {};
 const KEYMAP = {
   ArrowLeft: "left", KeyA: "left", ArrowRight: "right", KeyD: "right",
-  ArrowUp: "jump", KeyW: "jump", Space: "jump",
-  KeyJ: "attack", KeyF: "attack", KeyK: "special", KeyG: "special",
+  ArrowUp: "jump", KeyW: "jump",
+  KeyU: "lp", KeyZ: "lp", KeyI: "rp", KeyX: "rp", KeyJ: "lk", KeyC: "lk", KeyK: "rk", KeyV: "rk",
+  Space: "special", KeyE: "special", KeyG: "special",
   KeyL: "block", KeyS: "block", ArrowDown: "block", KeyH: "block",
 };
 addEventListener("keydown", e => {
@@ -35,7 +36,7 @@ document.querySelectorAll("#pad button").forEach(b => {
 });
 function playerInput() {
   const g = k => !!(keys[k] || touch[k]);
-  return { left: g("left"), right: g("right"), jump: g("jump"), attack: g("attack"), special: g("special"), block: g("block") };
+  return { left: g("left"), right: g("right"), jump: g("jump"), lp: g("lp"), rp: g("rp"), lk: g("lk"), rk: g("rk"), special: g("special"), block: g("block") };
 }
 
 // ---------- Sound ----------
@@ -127,21 +128,45 @@ function limb(x1, y1, x2, y2, w, col) {
 }
 
 // ---------- Kämpfer ----------
-const REACH = 78;
+// Tekken-Moves: start = Sekunden bis der Treffer zählt, total = Gesamtdauer
+const MOVES = {
+  lp: { dmg: 5,  reach: 74,  start: 0.07, total: 0.22, kb: 60, limb: "armF", y: -92, label: "PAF!" },
+  rp: { dmg: 8,  reach: 86,  start: 0.13, total: 0.34, kb: 100, limb: "armB", y: -86, label: "POW!" },
+  lk: { dmg: 6,  reach: 94,  start: 0.12, total: 0.32, kb: 80, limb: "legF", y: -34, label: "TRITT!" },
+  rk: { dmg: 11, reach: 108, start: 0.22, total: 0.52, kb: 100, limb: "legB", y: -92, label: "LAUNCH!", launch: true },
+};
+const MOVE_KEYS = ["lp", "rp", "lk", "rk"];
 class Fighter {
   constructor(def, x, facing, isCPU) {
     this.def = def; this.cpu = isCPU;
     this.x = x; this.y = GY; this.vx = 0; this.vy = 0; this.facing = facing;
     this.maxHp = def.hp; this.hp = def.hp; this.meter = 0;
-    this.atk = 0; this.atkHit = true; this.stun = 0; this.sp = 0; this.spHit = true; this.spTick = 0;
+    this.move = null; this.moveT = 0; this.moveHit = true; this.cancel = false; this.chain = 0;
+    this.combo = 0; this.comboT = 0; this.comboShow = 0; this.juggle = 0; this.rage = false;
+    this.stun = 0; this.sp = 0; this.spHit = true; this.spTick = 0; this.prev = {};
     this.blocking = false; this.walkT = 0; this.bubble = null; this.slam = false;
     this.wins = 0; this.ai = { t: 0, inp: {} };
   }
   get onGround() { return this.y >= GY; }
+  get atk() { return this.move ? 1 : 0; }
   say(txt, t = 1.3) { this.bubble = { txt, t }; }
+  startMove(key) {
+    this.move = MOVES[key]; this.moveKey = key; this.moveT = 0; this.moveHit = false; this.cancel = false; sfx.swing();
+  }
   update(dt, inp, foe) {
-    this.atk = Math.max(0, this.atk - dt);
+    const press = k => inp[k] && !this.prev[k];
     this.stun = Math.max(0, this.stun - dt);
+    if (this.stun <= 0) this.juggle = 0;
+    this.comboT -= dt; this.comboShow -= dt;
+    if (this.comboT <= 0) this.combo = 0;
+    if (!this.rage && this.hp > 0 && this.hp / this.maxHp <= 0.25) {
+      this.rage = true; this.say("RAGE!", 1.4);
+      fx.push({ x: this.x, y: this.y - 150, t: 0.8, txt: "RAGE!", col: "#ff5252" });
+    }
+    if (this.move) {
+      this.moveT += dt;
+      if (this.moveT >= this.move.total) this.move = null;
+    }
     if (this.bubble && (this.bubble.t -= dt) <= 0) this.bubble = null;
     const spActive = this.sp > 0;
     if (spActive) this.sp -= dt;
@@ -157,12 +182,16 @@ class Fighter {
         this.vx = this.blocking ? 0 : dir * 230 * this.def.speed;
         if (dir && this.onGround) this.walkT += dt;
         if (inp.jump && this.onGround && !this.blocking) { this.vy = -640; sfx.swing(); }
-        if (inp.attack && this.atk <= 0 && !this.blocking) {
-          this.atk = 0.32; this.atkHit = false; sfx.swing();
+        // Angriff: frei, oder als Kette nach einem Treffer (cancel)
+        const canAct = !this.move || (this.cancel && this.moveT >= this.move.start && this.chain < 5);
+        if (canAct && !this.blocking) {
+          const k = MOVE_KEYS.find(press);
+          if (k) { this.chain = this.move ? this.chain + 1 : 0; this.startMove(k); }
         }
-        if (inp.special && this.meter >= 100 && this.atk <= 0 && !this.blocking) this.startSpecial(foe);
+        if (inp.special && this.meter >= 100 && !this.move && !this.blocking) this.startSpecial(foe);
       }
     }
+    this.prev = Object.assign({}, inp);
 
     // Physik
     this.vy += 1700 * dt;
@@ -171,18 +200,27 @@ class Fighter {
     if (this.y >= GY) {
       if (this.slam) { this.slam = false; this.shockwave(foe); }
       this.y = GY; this.vy = 0;
+      if (this.stun > 0.3) this.stun = 0.3;
     }
 
-    // normaler Treffer
-    if (!this.atkHit && this.atk < 0.2 && this.atk > 0) {
-      this.atkHit = true;
-      if (this.inReach(foe, REACH)) this.hurt(foe, 7 * this.def.power, 260, "POW!");
+    // Treffer des aktuellen Moves
+    const m = this.move;
+    if (m && !this.moveHit && this.moveT >= m.start) {
+      this.moveHit = true;
+      if (this.inReach(foe, m.reach)) {
+        const scale = Math.max(0.4, 1 - 0.12 * this.combo);
+        this.hurt(foe, m.dmg * this.def.power * scale, m.kb, m.label, !!m.launch, false, m);
+        this.cancel = true;
+      } else this.cancel = false;
     }
 
     // Spezial
     if (spActive) this.specialTick(dt, foe);
   }
-  inReach(foe, r) { return Math.abs(foe.x - this.x) < r && Math.abs(foe.y - this.y) < 80; }
+  inReach(foe, r) {
+    const dy = Math.abs(foe.y - this.y);
+    return Math.abs(foe.x - this.x) < r + (foe.stun > 0 && !foe.onGround ? 30 : 0) && dy < (foe.stun > 0 && !foe.onGround ? 170 : 80);
+  }
   startSpecial(foe) {
     const s = this.def.special;
     this.meter = 0; this.spHit = false; this.spTick = 0;
@@ -217,23 +255,33 @@ class Fighter {
     }
   }
   shockwave(foe) {}
-  hurt(foe, dmg, kb, label, strong = false, quiet = false) {
+  // mv: Move-Daten bei normalen Angriffen (launch = Launcher), sonst Spezial
+  hurt(foe, dmg, kb, label, strong = false, quiet = false, mv = null) {
     const dir = foe.x >= this.x ? 1 : -1;
+    if (this.rage) dmg *= 1.3;
     if (foe.blocking && foe.facing === -dir) {
       dmg *= 0.15; kb *= 0.2;
       foe.stun = 0.08; foe.vx = dir * kb; foe.meter = Math.min(100, foe.meter + 3);
       fx.push({ x: foe.x - foe.facing * -20, y: foe.y - 90, t: 0.4, txt: "BLOCK", col: "#9be7ff" });
       sfx.block();
     } else {
-      foe.stun = strong ? 0.45 : 0.28; foe.vx = dir * kb;
-      if (strong || foe.onGround) foe.vy = strong ? -280 : -140;
-      foe.sp = 0; foe.atk = 0; foe.slam = false;
+      const airborne = foe.stun > 0 && !foe.onGround;
+      if (airborne) foe.juggle++;
+      if (foe.juggle > 3) dmg *= 0.5;
+      if (mv && mv.launch) { foe.stun = 1.1; foe.vy = -640; foe.vx = dir * 35; }
+      else if (airborne) { foe.stun = 1.1; foe.vy = foe.juggle <= 3 ? -260 : -60; foe.vx = dir * 35; }
+      else {
+        foe.stun = strong ? 0.45 : 0.28; foe.vx = dir * kb;
+        if (strong || foe.onGround) foe.vy = strong ? -280 : -80;
+      }
+      foe.sp = 0; foe.move = null; foe.slam = false;
       this.meter = Math.min(100, this.meter + 11);
       foe.meter = Math.min(100, foe.meter + 6);
+      this.combo++; this.comboT = 1.1; this.comboShow = 1.6;
       fx.push({ x: foe.x, y: foe.y - 100, t: 0.5, txt: label, col: strong ? "#ff5252" : "#fff35c" });
       shake = Math.max(shake, strong ? 10 : 4);
       sfx.hit();
-      if (!quiet && Math.random() < 0.28 && !foe.bubble) foe.say(pick(foe.def.quips));
+      if (!quiet && Math.random() < 0.2 && !foe.bubble) foe.say(pick(foe.def.quips));
     }
     foe.hp = Math.max(0, foe.hp - dmg);
   }
@@ -253,20 +301,28 @@ class Fighter {
     const bob = this.onGround && Math.abs(this.vx) < 5 ? Math.sin(performance.now() / 180) * 2 : 0;
     ctx.translate(0, bob);
 
+    const mv = this.move;
+    const e = mv ? (this.moveT < mv.start ? this.moveT / mv.start : Math.max(0, 1 - (this.moveT - mv.start) / (mv.total - mv.start))) : 0;
+    // Rage-Aura
+    if (this.rage) {
+      ctx.fillStyle = "rgba(255,50,50," + (0.22 + 0.1 * Math.sin(performance.now() / 90)) + ")";
+      ctx.beginPath(); ctx.ellipse(0, -80, 58, 108, 0, 0, 7); ctx.fill();
+    }
     // Beine
     const sw = this.onGround ? Math.sin(this.walkT * 14) * 14 : 10;
     const kicking = s === "kick" && this.sp > 0;
-    limb(-8, -48, -12 - sw, -4, 11, "#2b2b3a");
-    if (kicking) limb(8, -48, 72, -62, 11, "#2b2b3a");
-    else limb(8, -48, 12 + sw, -4, 11, "#2b2b3a");
-    // Schuhe
+    let bf = { x: -12 - sw, y: -4 }, ff = { x: 12 + sw, y: -4 };
+    if (kicking) ff = { x: 72, y: -62 };
+    if (mv && mv.limb === "legF") ff = { x: 14 + 84 * e, y: -4 - 30 * e };
+    if (mv && mv.limb === "legB") bf = { x: 10 + 92 * e, y: -4 - 86 * e };
+    limb(-8, -48, bf.x, bf.y, 11, "#2b2b3a");
+    limb(8, -48, ff.x, ff.y, 11, "#2b2b3a");
     ctx.fillStyle = "#fff"; ctx.strokeStyle = INK; ctx.lineWidth = 3;
-    if (!kicking) { ctx.beginPath(); ctx.ellipse(12 + sw + 5, -2, 12, 6, 0, 0, 7); ctx.fill(); ctx.stroke(); }
-    ctx.beginPath(); ctx.ellipse(-12 - sw + 5, -2, 12, 6, 0, 0, 7); ctx.fill(); ctx.stroke();
-    if (kicking) { ctx.beginPath(); ctx.ellipse(76, -64, 13, 8, -0.3, 0, 7); ctx.fill(); ctx.stroke(); }
+    for (const ft of [bf, ff]) { ctx.beginPath(); ctx.ellipse(ft.x + 5, ft.y - 2, 12, 6, 0, 0, 7); ctx.fill(); ctx.stroke(); }
 
-    // Hintere Hand
-    limb(-14, -86, -28, -62 + Math.sin(performance.now() / 200) * 2, 9, d.color);
+    // Hintere Hand (beim rechten Schlag der Schlagarm)
+    if (mv && mv.limb === "armB") { limb(-14, -86, -14 + 88 * e, mv.y, 9, d.color); fist(-10 + 88 * e, mv.y, d.color); }
+    else limb(-14, -86, -28, -62 + Math.sin(performance.now() / 200) * 2, 9, d.color);
 
     // Körper
     ctx.fillStyle = d.color; ctx.strokeStyle = INK; ctx.lineWidth = 4;
@@ -303,9 +359,8 @@ class Fighter {
       const a = Math.floor(this.sp * 12) % 2;
       limb(14, -90, 66, -96 + a * 14, 10, gl); fist(70, -96 + a * 14, gl);
       limb(-10, -90, 60, -80 - a * 14, 10, gl); fist(64, -80 - a * 14, gl);
-    } else if (this.atk > 0) {
-      const p = Math.sin((1 - this.atk / 0.32) * Math.PI);
-      limb(14, -90, 14 + 52 * p, -90 - 4 * p, 10, gl); fist(18 + 52 * p, -90 - 4 * p, gl);
+    } else if (mv && mv.limb === "armF") {
+      limb(14, -90, 14 + 62 * e, mv.y, 10, gl); fist(18 + 62 * e, mv.y, gl);
     } else if (this.sp > 0 && s === "projectile") {
       limb(14, -90, 48, -100, 10, gl); fist(52, -100, gl);
     } else {
@@ -345,7 +400,9 @@ function cpuInput(f, foe, dt) {
   const L = LEVELS[level], a = f.ai;
   a.t -= dt;
   const inp = a.inp;
-  inp.jump = false; inp.attack = false; inp.special = false;
+  inp.jump = false; inp.lp = inp.rp = inp.lk = inp.rk = false; inp.special = false;
+  // Nach einem Treffer die Kette fortsetzen (nur ab "Normal")
+  if (f.cancel && f.move && L.think < 0.3 && a.t > 0.06) a.t = 0.05;
   if (a.t > 0) return inp;
   a.t = L.think * rnd(0.6, 1.4);
   const dist = Math.abs(foe.x - f.x), dir = foe.x > f.x ? 1 : -1;
@@ -355,12 +412,12 @@ function cpuInput(f, foe, dt) {
     const ok = st === "projectile" ? dist > 160 : dist < 280 && dist > 70;
     if (ok) { inp.special = true; return inp; }
   }
-  if (foe.atk > 0.1 && dist < 130 && Math.random() < L.block) { inp.block = true; a.t = 0.3; return inp; }
-  if (dist > 85) {
+  if (foe.move && dist < 130 && Math.random() < L.block) { inp.block = true; a.t = 0.3; return inp; }
+  if (dist > 95) {
     if (dir > 0) inp.right = true; else inp.left = true;
     if (Math.random() < 0.08) inp.jump = true;
   } else {
-    if (Math.random() < L.atk) inp.attack = true;
+    if (Math.random() < L.atk) inp[pick(MOVE_KEYS)] = true;
     else if (Math.random() < 0.3) { if (dir > 0) inp.left = true; else inp.right = true; }
   }
   return inp;
@@ -382,7 +439,7 @@ function startMatch(idx) {
 function startRound() {
   for (const [f, x, d] of [[p1, 220, 1], [p2, 580, -1]]) {
     f.x = x; f.y = GY; f.vx = f.vy = 0; f.facing = d; f.hp = f.maxHp; f.meter = 0;
-    f.atk = f.stun = f.sp = 0; f.bubble = null; f.slam = false; f.blocking = false;
+    f.move = null; f.stun = f.sp = 0; f.combo = 0; f.comboShow = 0; f.juggle = 0; f.rage = false; f.cancel = false; f.prev = {}; f.bubble = null; f.slam = false; f.blocking = false;
   }
   fx = []; projectiles = []; timer = 60; phase = "intro"; phaseT = 1.6;
   banner = "RUNDE " + round;
@@ -461,6 +518,17 @@ function drawHud() {
       ctx.fillStyle = i < f.wins ? "#ffd23f" : "#333"; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = INK; ctx.stroke();
     }
   }
+  for (const [f, left] of [[p1, true], [p2, false]]) {
+    ctx.textBaseline = "alphabetic";
+    if (f.comboShow > 0 && f.combo >= 2) {
+      ctx.textAlign = left ? "left" : "right";
+      outlinedText(f.combo + " HIT COMBO!", left ? 24 : W - 24, 150, 30 + Math.min(f.combo, 8) * 2, "#ffd23f", INK, 7);
+    }
+    if (f.rage) {
+      ctx.textAlign = left ? "left" : "right";
+      outlinedText("RAGE", left ? 24 : W - 24, 124, 18, "#ff5252", INK, 5);
+    }
+  }
   ctx.textAlign = "center";
   ctx.fillStyle = "#fff"; ctx.strokeStyle = INK; ctx.lineWidth = 4;
   ctx.beginPath(); ctx.roundRect(W / 2 - 28, 14, 56, 44, 10); ctx.fill(); ctx.stroke();
@@ -537,7 +605,8 @@ function drawSelect() {
     ctx.fillStyle = INK; ctx.font = 'bold 16px "Comic Sans MS", system-ui, sans-serif';
     ctx.fillText(L.name, b.x + b.w / 2, b.y + b.h / 2 + 1);
   });
-  outlinedText("Pfeile + Enter oder antippen   |   Steuerung: A/D laufen, W springen, J Schlag, K Spezial, L Block", W / 2, 415, 13, "#fff", INK, 4);
+  outlinedText("A/D laufen · W springen · L blocken · U/I Schläge · J/K Tritte · Leertaste Spezial", W / 2, 408, 13, "#fff", INK, 4);
+  outlinedText("Tipp: Nach einem Treffer sofort die nächste Taste drücken = Kombo. K (Tritt) wirft hoch, dann weiter draufhauen!", W / 2, 428, 12, "#fff", INK, 4);
 }
 
 canvas.addEventListener("pointerdown", e => {
