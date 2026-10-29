@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Freunde-Kampf</title>
+<style>
+  :root { --bg: #1b1b2f; --ink: #111; --accent: #ffd23f; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: #fff;
+    font-family: "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif; overflow: hidden; }
+  #wrap { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 8px; }
+  canvas { width: 100%; max-width: 960px; max-height: calc(100vh - 16px); aspect-ratio: 16 / 9; border: 4px solid var(--ink);
+    border-radius: 8px; background: #000; touch-action: none; image-rendering: auto; }
+  #pad { display: none; width: 100%; max-width: 960px; justify-content: space-between; gap: 8px; user-select: none; -webkit-user-select: none; }
+  #pad .grp { display: flex; gap: 8px; }
+  #pad button { width: min(64px, 14.5vw); height: min(64px, 14.5vw); border-radius: 50%; border: 4px solid var(--ink); background: var(--accent);
+    font-size: 26px; touch-action: none; color: var(--ink); }
+  #pad button.on { background: #ff6b6b; }
+  @media (pointer: coarse) {
+    #pad { display: flex; }
+    canvas { max-height: calc(100vh - 100px); }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c" width="800" height="450"></canvas>
+  <div id="pad">
+    <div class="grp">
+      <button data-k="left">◀</button>
+      <button data-k="right">▶</button>
+      <button data-k="jump">⤒</button>
+    </div>
+    <div class="grp">
+      <button data-k="block">🛡</button>
+      <button data-k="special">⭐</button>
+      <button data-k="attack">👊</button>
+    </div>
+  </div>
+</div>
+<script src="characters.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
